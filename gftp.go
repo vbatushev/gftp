@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -26,6 +27,8 @@ const (
 	PUBKEY = 2
 	// DEFTIMEOUT — таймаут
 	DEFTIMEOUT = 3 // second
+	appname    = "George's FTP"
+	appver     = "1.0"
 )
 
 // SSH — структура описывающая соединение SSH
@@ -53,6 +56,15 @@ var (
 )
 
 func init() {
+	version := flag.Bool("v", false, "version")
+	flag.Parse()
+
+	if *version {
+		fmt.Println(appname, appver)
+		os.Exit(0)
+	}
+
+	fmt.Println(appname, appver)
 	loadEnvironments()
 }
 
@@ -146,7 +158,6 @@ func getFolder(client *sftp.Client, sfld syncFolder) error {
 		if w.Err() != nil {
 			continue
 		}
-		// fmt.Println(w.Path())
 		fi := w.Stat()
 		outPath := strings.TrimPrefix(w.Path(), sfld.Remote)
 		if fi.IsDir() {
@@ -154,30 +165,61 @@ func getFolder(client *sftp.Client, sfld syncFolder) error {
 				createIfNotExist(filepath.Join(sfld.Local, outPath))
 			}
 		} else {
-			dstFile, err := os.Create(filepath.Join(sfld.Local, outPath))
-			if err != nil {
-				return err
-			}
-			defer dstFile.Close()
-
 			srcFile, err := client.Open(w.Path())
 			if err != nil {
 				return err
 			}
 
-			bytes, err := io.Copy(dstFile, srcFile)
+			allow, err := chkLocalFile(filepath.Join(sfld.Local, outPath), srcFile)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("%s copied (%s) \n", w.Path(), byteCountIEC(bytes))
 
-			err = dstFile.Sync()
-			if err != nil {
-				return err
+			if allow {
+				fmt.Println("Copy", w.Path(), "...")
+				dstFile, err := os.Create(filepath.Join(sfld.Local, outPath))
+				if err != nil {
+					return err
+				}
+				defer dstFile.Close()
+
+				bytes, err := io.Copy(dstFile, srcFile)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("%s copied (%s) \n", w.Path(), byteCountIEC(bytes))
+
+				err = dstFile.Sync()
+				if err != nil {
+					return err
+				}
+				srcFile.Close()
 			}
 		}
 	}
 	return nil
+}
+
+func chkLocalFile(path string, src *sftp.File) (bool, error) {
+	st, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		fmt.Println("File", path, "not exist")
+		return true, nil
+	}
+
+	stat, err := src.Stat()
+	if err != nil {
+		return false, err
+	}
+
+	if st.Size() != stat.Size() {
+		fmt.Println("Local and remote files have different size. Allow copy.")
+		return true, nil
+	} else {
+		fmt.Println("Local and remote files have igual size. Don't allow copy.")
+	}
+
+	return false, nil
 }
 
 func byteCountIEC(b int64) string {
@@ -190,7 +232,7 @@ func byteCountIEC(b int64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %ciB",
+	return fmt.Sprintf("%.1f %cB",
 		float64(b)/float64(div), "KMGTPE"[exp])
 }
 
@@ -202,6 +244,9 @@ func loadEnvironments() {
 	}
 
 	_ = godotenv.Load(envFiles...)
+	// if err != nil {
+	// 	log.Fatal("Error:", err)
+	// }
 	var exists bool
 
 	host, exists = os.LookupEnv("SFTP_HOST")
